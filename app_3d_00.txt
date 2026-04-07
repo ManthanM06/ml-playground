@@ -1,0 +1,482 @@
+import { useState, useMemo, useEffect, useRef } from "react";
+import ReactFlow, {
+  Background,
+  Controls,
+  useNodesState,
+  useEdgesState,
+  useReactFlow,
+  ReactFlowProvider,
+} from "reactflow";
+import Editor from "@monaco-editor/react";
+import "reactflow/dist/style.css";
+import dagre from "dagre";
+
+// 3D Imports
+import { Canvas, useFrame } from "@react-three/fiber";
+import { OrbitControls, Text, Line, RoundedBox } from "@react-three/drei";
+import * as THREE from "three";
+
+const NODE_WIDTH = 220;
+const NODE_HEIGHT = 140;
+
+// 🎨 Color Palette
+const LAYER_COLORS = {
+  Linear: "#3b82f6", // Blue
+  Conv2d: "#10b981", // Green
+  ReLU: "#f97316", // Orange
+  MaxPool2d: "#ef4444", // Red
+  Flatten: "#8b5cf6", // Purple
+  Dropout: "#64748b", // Grey
+  default: "#64748b",
+};
+
+const getLayerColor = (className) =>
+  LAYER_COLORS[className] || LAYER_COLORS.default;
+
+// --- 2D Layout Helper ---
+function getLayoutedElements(nodes, edges, direction = "TB") {
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+  const isHorizontal = direction === "LR";
+  dagreGraph.setGraph({ rankdir: direction, nodesep: 80, ranksep: 120 });
+
+  nodes.forEach((node) => {
+    dagreGraph.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+  });
+
+  edges.forEach((edge) => {
+    dagreGraph.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(dagreGraph);
+
+  const layoutedNodes = nodes.map((node) => {
+    const nodeWithPosition = dagreGraph.node(node.id);
+    return {
+      ...node,
+      position: {
+        x: nodeWithPosition.x - NODE_WIDTH / 2,
+        y: nodeWithPosition.y - NODE_HEIGHT / 2,
+      },
+      sourcePosition: isHorizontal ? "right" : "bottom",
+      targetPosition: isHorizontal ? "left" : "top",
+    };
+  });
+
+  return { nodes: layoutedNodes, edges };
+}
+
+// --- 2D Component ---
+const VisualizerGraph = ({ nodes, edges, triggerFit }) => {
+  const { fitView } = useReactFlow();
+
+  useEffect(() => {
+    if (triggerFit && nodes.length > 0) {
+      requestAnimationFrame(() => {
+        fitView({ padding: 0.25, duration: 800 });
+      });
+    }
+  }, [triggerFit, nodes, fitView]);
+
+  return (
+    <ReactFlow nodes={nodes} edges={edges} fitView minZoom={0.1}>
+      <Background color="#333" gap={25} />
+      <Controls
+        style={{ backgroundColor: "#fff", padding: "4px", borderRadius: "4px" }}
+      />
+    </ReactFlow>
+  );
+};
+
+// --- 3D Components ---
+
+// A single 3D Layer Block
+const Layer3D = ({ position, color, label, details, isHovered }) => {
+  const meshRef = useRef();
+
+  // Slow rotation animation
+  useFrame((state, delta) => {
+    if (meshRef.current) meshRef.current.rotation.y += delta * 0.2;
+  });
+
+  return (
+    <group position={position}>
+      {/* The Main Block */}
+      <RoundedBox ref={meshRef} args={[2, 1, 0.5]} radius={0.1} smoothness={4}>
+        <meshStandardMaterial
+          color={color}
+          transparent
+          opacity={0.8}
+          metalness={0.5}
+          roughness={0.2}
+        />
+      </RoundedBox>
+
+      {/* Label floating above */}
+      <Text
+        position={[0, 1.2, 0]}
+        fontSize={0.4}
+        color="white"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.02}
+        outlineColor="#000"
+      >
+        {label}
+      </Text>
+
+      {/* Details floating below */}
+      <Text
+        position={[0, -1, 0]}
+        fontSize={0.25}
+        color="#ccc"
+        anchorX="center"
+        anchorY="middle"
+      >
+        {details}
+      </Text>
+    </group>
+  );
+};
+
+// The Connection Line between layers
+const Connection3D = ({ start, end }) => {
+  return (
+    <Line
+      points={[start, end]}
+      color="#555"
+      lineWidth={2}
+      transparent
+      opacity={0.5}
+    />
+  );
+};
+
+const Visualizer3D = ({ nodes }) => {
+  // Map nodes to 3D positions (Vertical Stack)
+  // We ignore the Dagre X/Y and just stack them on Z or Y axis
+  const elements = useMemo(() => {
+    return nodes.map((node, i) => ({
+      ...node,
+      pos3D: [0, -i * 2.5, 0], // Stack vertically downwards
+    }));
+  }, [nodes]);
+
+  return (
+    <Canvas camera={{ position: [5, 2, 10], fov: 50 }}>
+      <ambientLight intensity={0.5} />
+      <pointLight position={[10, 10, 10]} intensity={1} />
+      <OrbitControls enablePan={true} enableZoom={true} enableRotate={true} />
+
+      <group position={[0, elements.length, 0]}>
+        {" "}
+        {/* Center roughly */}
+        {elements.map((node, i) => (
+          <group key={node.id}>
+            <Layer3D
+              position={node.pos3D}
+              color={getLayerColor(node.data.className)} // Pass raw class name
+              label={node.data.layerName}
+              details={JSON.stringify(node.data.outShape)}
+            />
+            {/* Draw line to next node if it exists */}
+            {i < elements.length - 1 && (
+              <Connection3D start={node.pos3D} end={elements[i + 1].pos3D} />
+            )}
+          </group>
+        ))}
+      </group>
+
+      {/* Grid helper for floor feeling */}
+      <gridHelper
+        args={[20, 20, 0x444444, 0x222222]}
+        position={[0, -elements.length * 2.5 - 2, 0]}
+      />
+    </Canvas>
+  );
+};
+
+const defaultCode = `import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(1, 32, 3)
+        self.relu = nn.ReLU()
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(32 * 26 * 26, 128)
+        self.fc2 = nn.Linear(128, 10)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.flatten(x)
+        x = self.fc1(x)
+        x = self.fc2(x)
+        return x
+
+model = Model()
+`;
+
+export default function App() {
+  const [code, setCode] = useState(defaultCode);
+  const [inputShape, setInputShape] = useState("1, 1, 28, 28");
+  const [result, setResult] = useState(null);
+  const [fitTrigger, setFitTrigger] = useState(0);
+  const [viewMode, setViewMode] = useState("2D"); // Toggle State
+
+  // React Flow Nodes/Edges
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+
+  const handleEditorChange = (value) => {
+    setCode(value || "");
+  };
+
+  useEffect(() => {
+    if (!result) return;
+
+    // Build Nodes for BOTH 2D and 3D logic
+    const rawNodes = result.nodes.map((node) => {
+      const color = getLayerColor(node.class_name);
+      return {
+        id: node.id,
+        // We add raw data for 3D view to access easily
+        data: {
+          className: node.class_name,
+          layerName: node.layer,
+          outShape: node.shape,
+          params: node.params,
+          label: (
+            <div>
+              <div style={{ fontWeight: "bold", color }}>{node.layer}</div>
+              <div style={{ fontSize: "13px", opacity: 0.7 }}>
+                {node.class_name}
+              </div>
+              <div style={{ fontSize: "10px", marginTop: 6 }}>
+                {node.params.toLocaleString()} params
+              </div>
+              <div
+                style={{
+                  marginTop: 6,
+                  fontFamily: "monospace",
+                  fontSize: "10px",
+                }}
+              >
+                Out: {JSON.stringify(node.shape)}
+              </div>
+            </div>
+          ),
+        },
+        style: {
+          border: `2px solid ${color}`,
+          borderRadius: 10,
+          padding: 12,
+          background: "#1e1e1e",
+          color: "#fff",
+          width: NODE_WIDTH,
+        },
+      };
+    });
+
+    const rawEdges = result.edges.map((edge, i) => ({
+      id: `e-${i}`,
+      source: edge.from,
+      target: edge.to,
+      animated: true,
+      style: { stroke: "#aaa", strokeWidth: 2 },
+    }));
+
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+      rawNodes,
+      rawEdges,
+      "TB"
+    );
+    setNodes(layoutedNodes);
+    setEdges(layoutedEdges);
+  }, [result]);
+
+  const run = async () => {
+    try {
+      const shapeArray = inputShape
+        .replace(/[()]/g, "")
+        .split(",")
+        .map((num) => parseInt(num.trim()));
+      const res = await fetch("http://127.0.0.1:8000/trace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, input_shape: shapeArray }),
+      });
+      const data = await res.json();
+      if (data.error) alert("Error: " + data.error);
+      else {
+        setResult(data);
+        setFitTrigger((v) => v + 1);
+      }
+    } catch (e) {
+      alert("Failed to connect to backend");
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        height: "100vh",
+        width: "100vw",
+        background: "#1e1e1e",
+      }}
+    >
+      {/* LEFT PANEL */}
+      <div
+        style={{
+          width: "40%",
+          display: "flex",
+          flexDirection: "column",
+          borderRight: "1px solid #333",
+        }}
+      >
+        <div
+          style={{
+            padding: "15px",
+            background: "#252526",
+            display: "flex",
+            gap: "10px",
+            alignItems: "flex-end",
+          }}
+        >
+          <div style={{ flexGrow: 1 }}>
+            <label
+              style={{ fontSize: "11px", color: "#ccc", fontWeight: "bold" }}
+            >
+              INPUT SHAPE
+            </label>
+            <input
+              value={inputShape}
+              onChange={(e) => setInputShape(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px",
+                marginTop: "5px",
+                background: "#3c3c3c",
+                border: "1px solid #555",
+                color: "#fff",
+                fontFamily: "monospace",
+              }}
+            />
+          </div>
+          <button
+            onClick={run}
+            style={{
+              padding: "9px 20px",
+              background: "#0e639c",
+              color: "white",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: "bold",
+            }}
+          >
+            Visualize ▶
+          </button>
+        </div>
+        <div style={{ flex: 1 }}>
+          <Editor
+            height="100%"
+            defaultLanguage="python"
+            theme="vs-dark"
+            value={code}
+            onChange={handleEditorChange}
+            options={{
+              minimap: { enabled: false },
+              fontSize: 14,
+              scrollBeyondLastLine: false,
+              automaticLayout: true,
+            }}
+          />
+        </div>
+      </div>
+
+      {/* RIGHT PANEL */}
+      <div
+        style={{
+          width: "60%",
+          height: "100%",
+          background: "#121212",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        {/* Toggle Header */}
+        <div
+          style={{
+            height: "50px",
+            borderBottom: "1px solid #333",
+            display: "flex",
+            alignItems: "center",
+            padding: "0 20px",
+            justifyContent: "flex-end",
+          }}
+        >
+          <span
+            style={{ color: "#aaa", marginRight: "10px", fontSize: "14px" }}
+          >
+            View Mode:
+          </span>
+          <div
+            style={{
+              display: "flex",
+              background: "#333",
+              borderRadius: "4px",
+              padding: "2px",
+            }}
+          >
+            <button
+              onClick={() => setViewMode("2D")}
+              style={{
+                background: viewMode === "2D" ? "#4fc1ff" : "transparent",
+                color: viewMode === "2D" ? "#000" : "#ccc",
+                border: "none",
+                padding: "5px 15px",
+                borderRadius: "2px",
+                cursor: "pointer",
+                fontWeight: "bold",
+              }}
+            >
+              2D Graph
+            </button>
+            <button
+              onClick={() => setViewMode("3D")}
+              style={{
+                background: viewMode === "3D" ? "#4fc1ff" : "transparent",
+                color: viewMode === "3D" ? "#000" : "#ccc",
+                border: "none",
+                padding: "5px 15px",
+                borderRadius: "2px",
+                cursor: "pointer",
+                fontWeight: "bold",
+              }}
+            >
+              3D Model
+            </button>
+          </div>
+        </div>
+
+        {/* Content Area */}
+        <div style={{ flex: 1, position: "relative" }}>
+          {viewMode === "2D" ? (
+            <ReactFlowProvider>
+              <VisualizerGraph
+                nodes={nodes}
+                edges={edges}
+                triggerFit={fitTrigger}
+              />
+            </ReactFlowProvider>
+          ) : (
+            <Visualizer3D nodes={nodes} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
