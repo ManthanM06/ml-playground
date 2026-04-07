@@ -1,12 +1,10 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Sphere, Html, Text } from "@react-three/drei";
+import { OrbitControls, Sphere, Html } from "@react-three/drei";
 import * as THREE from "three";
+import { showToast } from "./App";
 
 // --- MATH & SURFACE LOGIC ---
-
-// Current Function: f(x, y) = 0.1(x^2 + y^2) - 0.5*cos(3x) - 0.5*cos(3y)
-// We add a 'seed' to shift the waves, simulating a "random" surface
 const calculateSurfaceZ = (x, y, seed = 0) => {
   return (
     0.1 * (x ** 2 + y ** 2) -
@@ -18,8 +16,8 @@ const calculateSurfaceZ = (x, y, seed = 0) => {
 // Custom Shader for Contour Lines
 const ContourMaterial = {
   uniforms: {
-    colorTop: { value: new THREE.Color("#ff0055") },
-    colorBottom: { value: new THREE.Color("#007acc") },
+    colorTop: { value: new THREE.Color("#ec4899") },
+    colorBottom: { value: new THREE.Color("#6366f1") },
   },
   vertexShader: `
     varying float vZ;
@@ -31,32 +29,23 @@ const ContourMaterial = {
   fragmentShader: `
     varying float vZ;
     void main() {
-      // Create contour bands based on height (vZ)
       float bands = sin(vZ * 10.0);
       float thickness = 0.1;
-      
-      // Mix colors based on height
-      vec3 color = mix(vec3(0.0, 0.4, 0.8), vec3(1.0, 0.0, 0.3), (vZ + 2.0) / 6.0);
-      
-      // Add black contour lines
+      vec3 color = mix(vec3(0.388, 0.4, 0.945), vec3(0.925, 0.282, 0.6), (vZ + 2.0) / 6.0);
       if (bands > 0.9) {
-        color = vec3(1.0, 1.0, 1.0); // White lines for contrast
+        color = vec3(1.0, 1.0, 1.0);
       }
-      
       gl_FragColor = vec4(color, 0.9);
     }
   `,
 };
 
-// 1. The 3D Terrain Component
+// The 3D Terrain
 const LossSurface = ({ seed }) => {
-  const meshRef = useRef();
-
   const geometry = useMemo(() => {
     const size = 10;
-    const segments = 128; // Higher res for smooth contours
+    const segments = 128;
     const geom = new THREE.PlaneGeometry(size, size, segments, segments);
-
     const pos = geom.attributes.position;
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
@@ -66,10 +55,10 @@ const LossSurface = ({ seed }) => {
     }
     geom.computeVertexNormals();
     return geom;
-  }, [seed]); // Re-run when seed changes
+  }, [seed]);
 
   return (
-    <mesh ref={meshRef} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+    <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
       <primitive object={geometry} attach="geometry" />
       <shaderMaterial
         args={[ContourMaterial]}
@@ -81,48 +70,35 @@ const LossSurface = ({ seed }) => {
   );
 };
 
-// 2. The Animated Ball Component
+// The Animated Ball
 const OptimizerBall = ({ path, isPlaying }) => {
   const sphereRef = useRef();
-  // We use a ref for current step to avoid re-renders slowing down the loop
   const stepRef = useRef(0);
-  const [displayStep, setDisplayStep] = useState(0); // Only for UI updates
+  const [displayStep, setDisplayStep] = useState(0);
 
   useFrame((state, delta) => {
     if (!isPlaying || !path || stepRef.current >= path.length - 1) return;
-
-    // Control Speed: Advance 1 step every X seconds?
-    // For smoothness, we just move 1 step per few frames or interpolate.
-    // Here we do simple interpolation:
-
-    const speed = 5 * delta; // Adjust this multiplier for speed
+    const speed = 5 * delta;
     const currentIdx = Math.floor(stepRef.current);
     const nextIdx = Math.min(currentIdx + 1, path.length - 1);
-
     stepRef.current += speed;
 
     if (currentIdx < path.length - 1) {
       const p1 = path[currentIdx];
       const p2 = path[nextIdx];
-      const alpha = stepRef.current - currentIdx; // 0 to 1
-
-      // Interpolate position
+      const alpha = stepRef.current - currentIdx;
       const x = THREE.MathUtils.lerp(p1[0], p2[0], alpha);
-      const y = THREE.MathUtils.lerp(p1[1], p2[1], alpha); // Z in data is Y in 3D
+      const y = THREE.MathUtils.lerp(p1[1], p2[1], alpha);
       const z = THREE.MathUtils.lerp(p1[2], p2[2], alpha);
-
       if (sphereRef.current) {
-        sphereRef.current.position.set(x, y + 0.2, z); // Lift slightly above surface
+        sphereRef.current.position.set(x, y + 0.2, z);
       }
-
-      // Sync UI occasionally
       if (Math.floor(stepRef.current) > displayStep) {
         setDisplayStep(Math.floor(stepRef.current));
       }
     }
   });
 
-  // Reset ball when path changes
   useEffect(() => {
     stepRef.current = 0;
     if (path && path[0] && sphereRef.current) {
@@ -133,13 +109,8 @@ const OptimizerBall = ({ path, isPlaying }) => {
   return (
     <group>
       <Sphere ref={sphereRef} args={[0.15, 32, 32]} position={[0, 5, 0]}>
-        <meshStandardMaterial
-          color="#fff"
-          emissive="#fff"
-          emissiveIntensity={1}
-        />
+        <meshStandardMaterial color="#fff" emissive="#6366f1" emissiveIntensity={2} />
       </Sphere>
-      {/* Label following the ball */}
       {sphereRef.current && (
         <Html
           position={[
@@ -151,11 +122,14 @@ const OptimizerBall = ({ path, isPlaying }) => {
           <div
             style={{
               color: "white",
-              background: "rgba(0,0,0,0.7)",
-              padding: "2px 5px",
-              borderRadius: 4,
+              background: "rgba(10,10,15,0.85)",
+              backdropFilter: "blur(10px)",
+              padding: "3px 8px",
+              borderRadius: 6,
               fontSize: 10,
               whiteSpace: "nowrap",
+              border: "1px solid rgba(99,102,241,0.3)",
+              fontFamily: "var(--font-mono)",
             }}
           >
             Step {displayStep}
@@ -166,7 +140,19 @@ const OptimizerBall = ({ path, isPlaying }) => {
   );
 };
 
-// --- MAIN PAGE COMPONENT ---
+// --- Path Trail ---
+const PathTrail = ({ path }) => {
+  if (!path || path.length < 2) return null;
+  const points = path.map((p) => new THREE.Vector3(p[0], p[1] + 0.15, p[2]));
+  const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+  return (
+    <line geometry={lineGeometry}>
+      <lineBasicMaterial color="#6366f1" transparent opacity={0.5} />
+    </line>
+  );
+};
+
+// --- MAIN ---
 export default function OptimizerLab() {
   const [optimizer, setOptimizer] = useState("SGD");
   const [lr, setLr] = useState(0.05);
@@ -174,19 +160,19 @@ export default function OptimizerLab() {
   const [path, setPath] = useState(null);
   const [losses, setLosses] = useState([]);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [seed, setSeed] = useState(0); // Surface Randomizer
+  const [isLoading, setIsLoading] = useState(false);
+  const [seed, setSeed] = useState(0);
 
-  // Generate a new random surface
   const randomizeSurface = () => {
     setSeed(Math.random() * 100);
-    setPath(null); // Clear previous run
+    setPath(null);
     setLosses([]);
     setIsPlaying(false);
   };
 
   const runSimulation = async () => {
-    // Reset
     setIsPlaying(false);
+    setIsLoading(true);
     setPath(null);
     setLosses([]);
 
@@ -203,31 +189,31 @@ export default function OptimizerLab() {
           steps: parseInt(epochs),
           start_x: startX,
           start_y: startY,
+          seed: seed,
         }),
       });
-
       const data = await res.json();
       setPath(data.path);
       setLosses(data.losses);
-
-      // Brief delay before starting animation so user sees the "Reset" state
       setTimeout(() => setIsPlaying(true), 100);
+      showToast(`${optimizer} optimization complete — ${epochs} steps`, "success");
     } catch (e) {
-      alert("Backend not running?");
+      showToast("Backend not running?", "error");
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  // Normalization for 2D Graph (Scale 0-100)
+  // Loss curve points
   const normalizedLossPoints = useMemo(() => {
     if (losses.length === 0) return "";
     const min = Math.min(...losses);
     const max = Math.max(...losses);
-    const range = max - min || 1; // Avoid divide by zero
-
+    const range = max - min || 1;
     return losses
       .map((l, i) => {
-        const x = (i / (losses.length - 1)) * 100; // X percent
-        const y = 100 - ((l - min) / range) * 100; // Y percent (inverted because SVG 0 is top)
+        const x = (i / (losses.length - 1)) * 100;
+        const y = 100 - ((l - min) / range) * 100;
         return `${x},${y}`;
       })
       .join(" ");
@@ -239,32 +225,35 @@ export default function OptimizerLab() {
       <div
         style={{
           width: "320px",
-          background: "#252526",
+          background: "var(--bg-secondary)",
           padding: "20px",
-          borderRight: "1px solid #333",
+          borderRight: "1px solid var(--border-primary)",
           color: "white",
           display: "flex",
           flexDirection: "column",
+          gap: "4px",
         }}
       >
-        <h3 style={{ marginTop: 0, color: "#4fc1ff" }}>Optimizer Lab 🧪</h3>
+        <h3
+          style={{
+            marginTop: 0,
+            marginBottom: 16,
+            background: "var(--gradient-accent)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            fontSize: 18,
+            fontWeight: 700,
+          }}
+        >
+          Optimizer Lab ⚡
+        </h3>
 
-        <div style={{ marginBottom: 20 }}>
-          <label style={{ fontSize: 11, color: "#aaa", fontWeight: "bold" }}>
-            OPTIMIZER
-          </label>
+        <div style={{ marginBottom: 16 }}>
+          <label className="label">OPTIMIZER</label>
           <select
+            className="select"
             value={optimizer}
             onChange={(e) => setOptimizer(e.target.value)}
-            style={{
-              width: "100%",
-              padding: 8,
-              marginTop: 5,
-              background: "#3c3c3c",
-              color: "white",
-              border: "1px solid #555",
-              borderRadius: 4,
-            }}
           >
             <option value="SGD">SGD (Stochastic Gradient Descent)</option>
             <option value="Adam">Adam (Adaptive Momentum)</option>
@@ -272,12 +261,19 @@ export default function OptimizerLab() {
           </select>
         </div>
 
-        <div style={{ marginBottom: 20 }}>
+        <div style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <label style={{ fontSize: 11, color: "#aaa", fontWeight: "bold" }}>
-              LEARNING RATE
-            </label>
-            <span style={{ fontSize: 11, color: "#4fc1ff" }}>{lr}</span>
+            <label className="label">LEARNING RATE</label>
+            <span 
+              style={{ 
+                fontSize: 11, 
+                color: "var(--accent-cyan)", 
+                fontFamily: "var(--font-mono)",
+                fontWeight: 600,
+              }}
+            >
+              {lr}
+            </span>
           </div>
           <input
             type="range"
@@ -286,16 +282,22 @@ export default function OptimizerLab() {
             step="0.001"
             value={lr}
             onChange={(e) => setLr(e.target.value)}
-            style={{ width: "100%", cursor: "pointer" }}
           />
         </div>
 
-        <div style={{ marginBottom: 20 }}>
+        <div style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <label style={{ fontSize: 11, color: "#aaa", fontWeight: "bold" }}>
-              EPOCHS
-            </label>
-            <span style={{ fontSize: 11, color: "#4fc1ff" }}>{epochs}</span>
+            <label className="label">EPOCHS</label>
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--accent-cyan)",
+                fontFamily: "var(--font-mono)",
+                fontWeight: 600,
+              }}
+            >
+              {epochs}
+            </span>
           </div>
           <input
             type="range"
@@ -304,67 +306,56 @@ export default function OptimizerLab() {
             step="10"
             value={epochs}
             onChange={(e) => setEpochs(e.target.value)}
-            style={{ width: "100%", cursor: "pointer" }}
           />
         </div>
 
-        <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
-          <button
-            onClick={randomizeSurface}
-            style={{
-              flex: 1,
-              padding: "10px",
-              background: "#444",
-              color: "white",
-              border: "none",
-              borderRadius: 4,
-              cursor: "pointer",
-              fontSize: 12,
-            }}
-          >
-            🎲 Random Surface
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          <button className="btn btn-secondary" style={{ flex: 1 }} onClick={randomizeSurface}>
+            🎲 Surface
           </button>
           <button
+            className="btn btn-primary"
+            style={{ flex: 2 }}
             onClick={runSimulation}
-            style={{
-              flex: 2,
-              padding: "10px",
-              background: "#0e639c",
-              color: "white",
-              border: "none",
-              borderRadius: 4,
-              cursor: "pointer",
-              fontWeight: "bold",
-              fontSize: 12,
-            }}
+            disabled={isLoading}
           >
-            ▶ Run
+            {isLoading ? (
+              <>
+                <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                Running...
+              </>
+            ) : (
+              "▶ Run Simulation"
+            )}
           </button>
         </div>
 
-        {/* 2D GRAPH */}
+        {/* Loss Curve */}
         <div
           style={{
             flex: 1,
-            border: "1px solid #444",
-            background: "#1e1e1e",
-            borderRadius: 6,
-            padding: 10,
+            border: "1px solid var(--border-primary)",
+            background: "var(--bg-primary)",
+            borderRadius: "var(--radius-md)",
+            padding: 12,
             position: "relative",
           }}
         >
           <div
             style={{
               fontSize: 10,
-              color: "#aaa",
+              color: "var(--text-muted)",
               marginBottom: 10,
               display: "flex",
               justifyContent: "space-between",
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.5px",
             }}
           >
             <span>LOSS CURVE</span>
             {losses.length > 0 && (
-              <span style={{ color: "#ff0055" }}>
+              <span style={{ color: "var(--accent-pink)", fontFamily: "var(--font-mono)" }}>
                 Final: {losses[losses.length - 1].toFixed(4)}
               </span>
             )}
@@ -372,43 +363,20 @@ export default function OptimizerLab() {
 
           <div style={{ width: "100%", height: "120px", position: "relative" }}>
             {losses.length > 0 ? (
-              <svg
-                width="100%"
-                height="100%"
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-              >
-                {/* Grid Lines */}
-                <line
-                  x1="0"
-                  y1="25"
-                  x2="100"
-                  y2="25"
-                  stroke="#333"
-                  strokeWidth="0.5"
-                />
-                <line
-                  x1="0"
-                  y1="50"
-                  x2="100"
-                  y2="50"
-                  stroke="#333"
-                  strokeWidth="0.5"
-                />
-                <line
-                  x1="0"
-                  y1="75"
-                  x2="100"
-                  y2="75"
-                  stroke="#333"
-                  strokeWidth="0.5"
-                />
-
-                {/* The Data Line */}
+              <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="lossGrad" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stopColor="#6366f1" />
+                    <stop offset="100%" stopColor="#ec4899" />
+                  </linearGradient>
+                </defs>
+                <line x1="0" y1="25" x2="100" y2="25" stroke="rgba(255,255,255,0.05)" strokeWidth="0.5" />
+                <line x1="0" y1="50" x2="100" y2="50" stroke="rgba(255,255,255,0.05)" strokeWidth="0.5" />
+                <line x1="0" y1="75" x2="100" y2="75" stroke="rgba(255,255,255,0.05)" strokeWidth="0.5" />
                 <polyline
                   points={normalizedLossPoints}
                   fill="none"
-                  stroke="#ff0055"
+                  stroke="url(#lossGrad)"
                   strokeWidth="2"
                   vectorEffect="non-scaling-stroke"
                 />
@@ -420,11 +388,11 @@ export default function OptimizerLab() {
                   height: "100%",
                   alignItems: "center",
                   justifyContent: "center",
-                  color: "#555",
+                  color: "var(--text-muted)",
                   fontSize: 11,
                 }}
               >
-                Waiting for run...
+                Click "Run Simulation" to begin...
               </div>
             )}
           </div>
@@ -432,24 +400,22 @@ export default function OptimizerLab() {
       </div>
 
       {/* RIGHT PANEL: 3D */}
-      <div style={{ flex: 1, background: "#121212", position: "relative" }}>
+      <div style={{ flex: 1, background: "var(--bg-primary)", position: "relative" }}>
+        {isLoading && (
+          <div className="loading-overlay">
+            <span className="spinner spinner-lg"></span>
+            <span>Running {optimizer} optimization...</span>
+          </div>
+        )}
         <Canvas camera={{ position: [8, 10, 8], fov: 40 }}>
-          <color attach="background" args={["#121212"]} />
+          <color attach="background" args={["#0a0a0f"]} />
           <ambientLight intensity={0.5} />
           <pointLight position={[10, 10, 10]} intensity={1} />
           <OrbitControls autoRotate={false} enableDamping dampingFactor={0.1} />
-
-          {/* The Surface with Contours */}
           <LossSurface seed={seed} />
-
-          {/* The Optimizer Agent */}
+          {path && <PathTrail path={path} />}
           {path && <OptimizerBall path={path} isPlaying={isPlaying} />}
-
-          {/* Helper Grid */}
-          <gridHelper
-            args={[20, 20, 0x333333, 0x111111]}
-            position={[0, -2, 0]}
-          />
+          <gridHelper args={[20, 20, 0x222222, 0x111111]} position={[0, -2, 0]} />
         </Canvas>
 
         {/* Legend */}
@@ -458,42 +424,37 @@ export default function OptimizerLab() {
             position: "absolute",
             top: 20,
             right: 20,
-            background: "rgba(0,0,0,0.8)",
-            padding: "10px 15px",
-            borderRadius: 6,
+            background: "rgba(10,10,15,0.85)",
+            backdropFilter: "blur(10px)",
+            padding: "12px 16px",
+            borderRadius: "var(--radius-md)",
             color: "white",
             fontSize: 11,
-            border: "1px solid #333",
+            border: "1px solid var(--border-primary)",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              marginBottom: 4,
-            }}
-          >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
             <div
               style={{
                 width: 10,
                 height: 10,
-                background: "#ff0055",
+                background: "#6366f1",
                 borderRadius: "50%",
+                boxShadow: "0 0 8px rgba(99,102,241,0.6)",
               }}
-            ></div>
-            Current Position
+            />
+            Optimizer Position
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div
               style={{
                 width: 10,
                 height: 10,
-                background: "linear-gradient(to right, #007acc, #ff0055)",
+                background: "linear-gradient(to right, #6366f1, #ec4899)",
                 borderRadius: 2,
               }}
-            ></div>
-            Low Loss → High Loss
+            />
+            Low → High Loss
           </div>
         </div>
       </div>

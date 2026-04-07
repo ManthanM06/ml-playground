@@ -1,13 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import torch
 import torch.nn as nn
 import torch.fx as fx
 from torch.fx.passes.shape_prop import ShapeProp
 import math
 
-app = FastAPI()
+app = FastAPI(title="PyTorch Studio API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -18,11 +18,16 @@ app.add_middleware(
 )
 
 class TraceRequest(BaseModel):
-    code: str
-    input_shape: list[int]
+    code: str = Field(..., max_length=10000)
+    input_shape: list[int] = Field(..., min_length=1, max_length=6)
 
 @app.post("/trace")
 def trace_model(req: TraceRequest):
+    # Validate shape dimensions
+    for dim in req.input_shape:
+        if dim < 1 or dim > 2048:
+            return {"error": f"Shape dimension {dim} is out of range (1-2048)"}
+
     safe_globals = {"torch": torch, "nn": nn}
     safe_locals = {}
 
@@ -50,9 +55,6 @@ def trace_model(req: TraceRequest):
 
     nodes = []
     edges = []
-    
-    # Create a map to find the actual layer object (to count params)
-    # named_modules() returns: {'fc1': Linear(...), 'relu': ReLU(), ...}
     module_dict = dict(model.named_modules())
 
     for node in traced.graph.nodes:
@@ -63,7 +65,6 @@ def trace_model(req: TraceRequest):
         if "tensor_meta" in node.meta:
             shape = list(node.meta["tensor_meta"].shape)
 
-        # Calculate Parameters
         param_count = 0
         if node.op == "call_module":
             submodule = module_dict.get(node.target)
@@ -72,8 +73,8 @@ def trace_model(req: TraceRequest):
 
         nodes.append({
             "id": node.name,
-            "type": node.op, # call_module, call_function, etc.
-            "layer": str(node.target), # fc1, relu
+            "type": node.op,
+            "layer": str(node.target),
             "class_name": module_dict.get(node.target).__class__.__name__ if node.op == "call_module" else "Op",
             "shape": shape,
             "params": param_count
@@ -88,48 +89,42 @@ def trace_model(req: TraceRequest):
 
     return {"nodes": nodes, "edges": edges}
 
-class OptimizerRequest(BaseModel):
-    optimizer_name: str  # "SGD", "Adam", "RMSprop"
-    learning_rate: float
-    steps: int
-    start_x: float
-    start_y: float
 
-# The "Loss Function" Surface (A visual function with hills/valleys)
-# f(x, y) = 0.1(x^2 + y^2) - 0.5*cos(3x) - 0.5*cos(3y) (A simplified Rastrigin function)
-def surface_function(x, y):
-    return 0.1 * (x**2 + y**2) - 0.5 * torch.cos(3*x) - 0.5 * torch.cos(3*y)
+class OptimizerRequest(BaseModel):
+    optimizer_name: str = Field(..., pattern="^(SGD|Adam|RMSprop)$")
+    learning_rate: float = Field(..., gt=0, le=1.0)
+    steps: int = Field(..., ge=1, le=500)
+    start_x: float = Field(..., ge=-10.0, le=10.0)
+    start_y: float = Field(..., ge=-10.0, le=10.0)
+    seed: float = Field(default=0.0)
+
+
+def surface_function(x, y, seed=0.0):
+    """Rastrigin-like loss surface with configurable seed for wave shift."""
+    return 0.1 * (x**2 + y**2) - 0.5 * torch.cos(3*x + seed) - 0.5 * torch.cos(3*y + seed)
+
 
 @app.post("/optimize")
 def run_optimizer(req: OptimizerRequest):
-    # 1. Initialize Parameters
-    # We use requires_grad=True so PyTorch tracks gradients
     params = torch.tensor([req.start_x, req.start_y], requires_grad=True)
-    
-    # 2. Select Optimizer
+
     if req.optimizer_name == "Adam":
         optim = torch.optim.Adam([params], lr=req.learning_rate)
     elif req.optimizer_name == "RMSprop":
         optim = torch.optim.RMSprop([params], lr=req.learning_rate)
     else:
         optim = torch.optim.SGD([params], lr=req.learning_rate, momentum=0.9)
-        
+
     path = []
     losses = []
 
-    # 3. Training Loop
     for step in range(req.steps):
-        # Record current position
         x_val = params[0].item()
         y_val = params[1].item()
-        
-        # Calculate Loss (Z-height)
-        loss = surface_function(params[0], params[1])
-        
-        path.append([x_val, loss.item(), y_val]) # Store as [x, z, y] for 3D plotting
+        loss = surface_function(params[0], params[1], seed=req.seed)
+        path.append([x_val, loss.item(), y_val])
         losses.append(loss.item())
 
-        # Optimization Step
         optim.zero_grad()
         loss.backward()
         optim.step()
